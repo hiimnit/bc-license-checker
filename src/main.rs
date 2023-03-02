@@ -98,11 +98,11 @@ impl ObjectType {
             | ObjectType::Report
             | ObjectType::Codeunit
             | ObjectType::XMLport
+            | ObjectType::Query
             | ObjectType::Page => true,
 
             ObjectType::Table
             | ObjectType::MenuSuite
-            | ObjectType::Query
             | ObjectType::System
             | ObjectType::FieldNumber
             | ObjectType::PageExtension
