@@ -4,6 +4,7 @@ use dialoguer::console::Term;
 use dialoguer::{theme::ColorfulTheme, Select};
 use encoding_rs::WINDOWS_1252;
 use encoding_rs_io::DecodeReaderBytesBuilder;
+use itertools::Itertools;
 use std::error::Error;
 use std::fs;
 use std::io::{self, Read, Seek, Write};
@@ -18,7 +19,7 @@ struct Args {
     objects: String,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 enum ObjectType {
     TableData,
     Table,
@@ -67,7 +68,7 @@ impl ObjectType {
         }
     }
 
-    pub fn to_string(self: &Self) -> &str {
+    pub fn format(&self) -> &str {
         match self {
             ObjectType::TableData => "TableData",
             ObjectType::Table => "Table",
@@ -92,7 +93,7 @@ impl ObjectType {
         }
     }
 
-    pub fn is_licensed(self: &Self) -> bool {
+    pub fn is_licensed(&self) -> bool {
         match self {
             ObjectType::TableData
             | ObjectType::Report
@@ -124,18 +125,30 @@ struct ObjectRange {
     quantity: i64,
     range_from: i64,
     range_to: i64,
-    permission: String,
 }
 
 impl ObjectRange {
-    pub fn new(object_type: &str, range_from: i64, range_to: i64, permission: &str) -> Self {
+    pub fn new(object_type: &str, range_from: i64, range_to: i64) -> Self {
         Self {
             object_type: ObjectType::from(object_type),
             quantity: range_to - range_from + 1,
             range_from,
             range_to,
-            permission: permission.to_owned(),
         }
+    }
+
+    pub fn start_new(object_type: ObjectType, id: i64) -> Self {
+        Self {
+            object_type,
+            quantity: 1,
+            range_from: id,
+            range_to: id,
+        }
+    }
+
+    pub fn increase_range_to(&mut self) {
+        self.range_to += 1;
+        self.quantity += 1;
     }
 }
 
@@ -169,15 +182,15 @@ fn read_file(
     let mut result = String::new();
     reader.read_to_string(&mut result)?;
 
-    return Ok(result);
+    Ok(result)
 }
 
 fn pick_sheet<RS: Read + Seek>(excel: &Xlsx<RS>) -> Result<String, &str> {
     let sheet_names = excel.sheet_names();
 
     match sheet_names.len() {
-        0 => return Err("No sheets"),
-        1 => return Ok(sheet_names.first().unwrap().clone()),
+        0 => Err("No sheets"),
+        1 => Ok(sheet_names.first().unwrap().clone()),
         _ => {
             let selection = Select::with_theme(&ColorfulTheme::default())
                 .items(sheet_names)
@@ -185,24 +198,52 @@ fn pick_sheet<RS: Read + Seek>(excel: &Xlsx<RS>) -> Result<String, &str> {
                 .interact_on_opt(&Term::stderr())
                 .or(Err("Terminal error"))?;
 
-            return match selection {
+            match selection {
                 Some(index) => Ok(sheet_names[index].clone()),
                 None => Err("Select a sheet!"),
-            };
+            }
         }
     }
+}
+
+fn merge_missing_objects(missing_objects: &[Object]) -> Vec<ObjectRange> {
+    let groups = missing_objects.iter().into_group_map_by(|e| e.object_type);
+
+    let mut ranges: Vec<ObjectRange> = vec![];
+
+    for (object_type, mut objects) in groups {
+        objects.sort_by_key(|e| e.id);
+
+        let first_object = objects.first().unwrap();
+
+        let mut range = ObjectRange::start_new(object_type, first_object.id);
+
+        for object in objects.iter().skip(1) {
+            if object.id == range.range_to + 1 {
+                range.increase_range_to();
+                continue;
+            }
+
+            ranges.push(range);
+            range = ObjectRange::start_new(object_type, object.id);
+        }
+
+        ranges.push(range);
+    }
+
+    ranges
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
 
     let mut licensed_object_ranges: Vec<ObjectRange> = Vec::from([
-        ObjectRange::new("TableData", 50000, 50009, "RIMDX"),
-        ObjectRange::new("Page", 50000, 50099, "X"),
-        ObjectRange::new("Report", 50000, 50099, "X"),
-        ObjectRange::new("Codeunit", 50000, 50099, "X"),
-        ObjectRange::new("XMLPort", 50000, 50099, "X"),
-        ObjectRange::new("Query", 50000, 50099, "X"),
+        ObjectRange::new("TableData", 50000, 50009),
+        ObjectRange::new("Page", 50000, 50099),
+        ObjectRange::new("Report", 50000, 50099),
+        ObjectRange::new("Codeunit", 50000, 50099),
+        ObjectRange::new("XMLPort", 50000, 50099),
+        ObjectRange::new("Query", 50000, 50099),
     ]);
 
     let checked_range: RangeInclusive<i64> = 50000..=99999;
@@ -214,23 +255,20 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let skip = license_file
         .lines()
-        .into_iter()
         .skip_while(|p| *p != "Object Assignment");
 
     for line in skip
         .skip(5)
         .take_while(|p| *p != "Module Objects and Permissions")
-        .filter(|p| *p != "")
+        .filter(|p| !p.is_empty())
     {
         let words = line.split_whitespace();
-        if let &[object_type, _, range_from, range_to, permission] =
-            words.collect::<Vec<&str>>().as_slice()
+        if let &[object_type, _, range_from, range_to, _] = words.collect::<Vec<&str>>().as_slice()
         {
             licensed_object_ranges.push(ObjectRange::new(
                 object_type,
                 range_from.parse::<i64>()?,
                 range_to.parse::<i64>()?,
-                permission,
             ));
         } else {
             unimplemented!("Unimplemented license format.");
@@ -279,16 +317,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    // TODO print stats - how many objects found?
-
     if missing_objects.is_empty() {
         println!("No missing objects found!");
         return Ok(());
     }
 
+    let missing_ranges = merge_missing_objects(&missing_objects);
+
     let path = "missing-permissions.csv";
 
-    let file = fs::File::create(&path)?;
+    let file = fs::File::create(path)?;
     let mut file = io::LineWriter::new(file);
 
     file.write_all(b"ObjectType,FromObjectID,ToObjectID,Read,Insert,Modify,Delete,Execute,AvailableRange,Used,ObjectTypeRemaining,CompanyObjectPermissionID\n")?;
@@ -297,23 +335,23 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!(
             "{} {}\t{}",
             object.id,
-            object.object_type.to_string(),
+            object.object_type.format(),
             object.name
         );
+    }
 
-        let object_id = object.id.to_string();
-        let quantity = (object.id - object.id + 1).to_string();
-        let line = vec![
-            object.object_type.to_string(),
-            &object_id,
-            &object_id,
+    for range in missing_ranges {
+        let line = [
+            range.object_type.format(),
+            &range.range_from.to_string(),
+            &range.range_to.to_string(),
             "Direct",
             "Direct",
             "Direct",
             "Direct",
             "Direct",
             "50000 - 99999",
-            &quantity,
+            &range.quantity.to_string(),
             "0",
             "0",
         ];
