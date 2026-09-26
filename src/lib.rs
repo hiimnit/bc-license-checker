@@ -2,8 +2,7 @@ use calamine::{open_workbook_from_rs, Reader, Xlsx};
 use itertools::Itertools;
 use std::{
     error::Error,
-    fs::File,
-    io::{BufReader, Read, Seek},
+    io::{Read, Seek},
     ops::RangeInclusive,
 };
 
@@ -239,7 +238,10 @@ fn parse_license(license: Option<String>) -> Result<Vec<ObjectRange>, Box<dyn Er
     Ok(licensed_object_ranges)
 }
 
-fn parse_objects(objects_reader: BufReader<File>) -> Result<Vec<Object>, Box<dyn Error>> {
+fn parse_objects<RS>(objects_reader: RS) -> Result<Vec<Object>, Box<dyn Error>>
+where
+    RS: Read + Seek,
+{
     let mut objects: Vec<Object> = Vec::new();
     let mut excel: Xlsx<_> = open_workbook_from_rs(objects_reader)?;
     let selected_sheet = pick_sheet(&excel)?;
@@ -271,10 +273,13 @@ fn parse_objects(objects_reader: BufReader<File>) -> Result<Vec<Object>, Box<dyn
     Ok(objects)
 }
 
-pub fn compare(
+pub fn compare<RS>(
     license: Option<String>,
-    objects_reader: BufReader<File>,
-) -> Result<(Vec<Object>, Vec<ObjectRange>), Box<dyn Error>> {
+    objects_reader: RS,
+) -> Result<(Vec<Object>, Vec<ObjectRange>), Box<dyn Error>>
+where
+    RS: Read + Seek,
+{
     let licensed_object_ranges = parse_license(license)?;
     let objects = parse_objects(objects_reader)?;
 
