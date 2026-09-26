@@ -1,7 +1,6 @@
 use calamine::{open_workbook_from_rs, Reader, Xlsx};
 use itertools::Itertools;
 use std::{
-    error::Error,
     io::{Read, Seek},
     ops::RangeInclusive,
 };
@@ -202,7 +201,7 @@ fn merge_missing_objects(missing_objects: &[Object]) -> Vec<ObjectRange> {
     ranges
 }
 
-fn parse_license(license: Option<String>) -> Result<Vec<ObjectRange>, Box<dyn Error>> {
+fn parse_license(license: Option<String>) -> Result<Vec<ObjectRange>, SendSyncError> {
     let mut licensed_object_ranges: Vec<ObjectRange> = Vec::from([
         ObjectRange::new_with_type(ObjectType::TableData, 50000, 50009),
         ObjectRange::new_with_type(ObjectType::Page, 50000, 50099),
@@ -238,7 +237,7 @@ fn parse_license(license: Option<String>) -> Result<Vec<ObjectRange>, Box<dyn Er
     Ok(licensed_object_ranges)
 }
 
-fn parse_objects<RS>(objects_reader: RS) -> Result<Vec<Object>, Box<dyn Error>>
+fn parse_objects<RS>(objects_reader: RS) -> Result<Vec<Object>, SendSyncError>
 where
     RS: Read + Seek,
 {
@@ -273,10 +272,12 @@ where
     Ok(objects)
 }
 
+pub type SendSyncError = Box<dyn std::error::Error + Send + Sync>;
+
 pub fn compare<RS>(
     license: Option<String>,
     objects_reader: RS,
-) -> Result<(Vec<Object>, Vec<ObjectRange>), Box<dyn Error>>
+) -> Result<(Vec<Object>, Vec<ObjectRange>), SendSyncError>
 where
     RS: Read + Seek,
 {

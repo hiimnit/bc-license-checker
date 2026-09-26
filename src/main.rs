@@ -30,7 +30,7 @@ fn read_file(
     Ok(result)
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
+fn main() -> Result<(), bclicensechecker::SendSyncError> {
     let args = Args::parse();
 
     let license = args.license.map(|license| {
